@@ -1,0 +1,6 @@
+face_recognition
+setuptools<81  # face_recognition_models (não mantido) importa pkg_resources, removido do setuptools 81+
+numpy
+pillow
+pillow-heif
+tqdm
