@@ -28,7 +28,7 @@ import json
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 
 EMBEDDING_DIM = 512
 DTYPE = np.float32
@@ -99,19 +99,44 @@ class FaceStore:
         return self.vec_path.stat().st_size // (self.dim * np.dtype(DTYPE).itemsize)
 
 
-def prancha(meta, membros, thumb_dir: Path, destino: Path, cols: int = 12, cell: int = 110):
-    nomes = [meta[m].get("thumb") for m in membros if meta[m].get("thumb")]
-    if not nomes:
+def prancha(meta, membros, thumb_dir: Path, destino: Path, cols: int = 12,
+            cell: int = 110, max_rostos: int = 48):
+    """Folha de contato de uma identidade, para responder a olho a
+    pergunta "isto é uma pessoa só?".
+
+    A amostra é espalhada ao longo do tempo, não os primeiros N. Rostos
+    consecutivos tendem a ser do mesmo dia — mesma luz, mesma roupa,
+    mesmo ângulo — e é exatamente a amostra que parece coerente mesmo
+    quando o grupo mistura gente diferente. Espalhando, um grupo que não
+    é uma pessoa só se denuncia.
+
+    A legenda diz quantos rostos apareceram de quantos: sem ela, quem
+    olha 48 de 670 não tem como saber que está vendo 7% da identidade."""
+    com_thumb = [m for m in membros if meta[m].get("thumb")]
+    if not com_thumb:
         return False
-    nomes = nomes[: cols * 4]
-    linhas = (len(nomes) + cols - 1) // cols
-    folha = Image.new("RGB", (cell * cols, cell * linhas), (22, 22, 22))
-    for i, nome in enumerate(nomes):
-        caminho = thumb_dir / nome
+    total = len(com_thumb)
+    ordenados = sorted(com_thumb, key=lambda m: meta[m].get("capture_time") or "")
+    if total > max_rostos:
+        passo = total / max_rostos
+        escolhidos = [ordenados[int(i * passo)] for i in range(max_rostos)]
+    else:
+        escolhidos = ordenados
+    linhas = (len(escolhidos) + cols - 1) // cols
+    rodape = 18
+    folha = Image.new("RGB", (cell * cols, cell * linhas + rodape), (22, 22, 22))
+    for i, m in enumerate(escolhidos):
+        caminho = thumb_dir / meta[m]["thumb"]
         if not caminho.exists():
             continue
         r, c = divmod(i, cols)
         folha.paste(Image.open(caminho).resize((cell, cell)), (c * cell, r * cell))
+    legenda = f"{len(escolhidos)} de {total} rostos"
+    if total > max_rostos:
+        datas = [meta[m].get("capture_time") or "" for m in ordenados]
+        periodo = f"{datas[0][:7]} a {datas[-1][:7]}" if datas[0] and datas[-1] else "?"
+        legenda += f", amostrados ao longo de {periodo}"
+    ImageDraw.Draw(folha).text((5, cell * linhas + 4), legenda, fill=(190, 190, 190))
     folha.save(destino)
     return True
 

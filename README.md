@@ -202,7 +202,7 @@ Nem toda identidade do topo merece um álbum. Duas situações, dois níveis:
 | nível | aparece no ranking | vira álbum | para quê |
 |---|---|---|---|
 | `sem-album` | sim, carimbado com o motivo | não | grupos que não são uma pessoa só — gente de máscara, por exemplo, que colapsa numa identidade só porque metade do rosto está coberta |
-| `ignorar` | não | não | pessoas de verdade que você não quer organizar; somem do ranking e de qualquer álbum, hoje e nas varreduras futuras |
+| `ignorar` | não | não | pessoas de verdade que você não quer organizar; somem do ranking e nunca viram álbum, hoje e nas varreduras futuras |
 
 ```bash
 python scripts/person_blocklist.py add pessoa_07 --nivel sem-album \
@@ -212,6 +212,12 @@ python scripts/person_blocklist.py list
 python scripts/person_blocklist.py check    # o que cada bloqueio pega, e com que folga
 python scripts/person_blocklist.py remove b2c3d4e5f601
 ```
+
+O bloqueio vale para as automações daqui: o que o ranqueamento lista e o
+que o `album_person` cria. Ele **não é um cadeado sobre as fotos** — quem
+pedir explicitamente pelo id (`fetch_person.py <id>`, usando um ranking
+anterior ao bloqueio) continua rebaixando as fotos da pessoa. Bloquear é
+dizer "não organize isso automaticamente", não "esconda de mim".
 
 O bloqueio é guardado pelos **rostos** da pessoa, não pelo `pessoa_NN` nem
 pelo `id` — os dois mudam quando a biblioteca cresce, e "nunca mais" só vale

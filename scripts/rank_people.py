@@ -188,7 +188,8 @@ def main() -> int:
     p.add_argument("--block", type=int, default=4000,
                    help="Rostos por bloco no nível 1 (default 4000; a matriz do bloco "
                         "custa block² × 8 bytes de RAM)")
-    p.add_argument("--merge-threshold", type=float, default=1.10,
+    p.add_argument("--merge-threshold", type=float,
+                   default=person_blocklist.MERGE_THRESHOLD,
                    help="Limiar para fundir grupos no nível 2 (default 1.10). Comparado "
                         "contra a raiz da média dos quadrados, que é sempre maior que a "
                         "média simples — por isso é mais folgado que --threshold")

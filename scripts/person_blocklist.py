@@ -88,9 +88,11 @@ DEFAULT_RANKING = REPO_ROOT / "data" / "top_pessoas" / "ranking.json"
 
 NIVEIS = ("sem-album", "ignorar")
 
-# O mesmo default do `--merge-threshold` do rank_people: é literalmente o
-# mesmo teste ("estes dois conjuntos de rostos são a mesma pessoa"), e um
-# limiar próprio aqui só criaria duas noções concorrentes disso.
+# Fonte única do limiar de "estes dois conjuntos de rostos são a mesma
+# pessoa". O `--merge-threshold` do rank_people usa este valor como
+# default em vez de repetir o número: com duas constantes, ajustar o
+# ranqueamento e esquecer a blocklist faria o bloqueio do álbum divergir
+# do bloqueio do ranking em silêncio.
 MERGE_THRESHOLD = 1.10
 EMBEDDING_DIM = 512
 

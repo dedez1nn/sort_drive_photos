@@ -17,6 +17,13 @@ Uso:
 
 Baixa em lotes com teto de disco, como a varredura — mas aqui os arquivos
 NÃO são apagados, são o resultado que você quer.
+
+Este script **não consulta a blocklist**, e é de propósito: ele recebe um
+id explícito de quem digitou o comando. O bloqueio de
+`person_blocklist.py` decide o que o ranqueamento lista e o que vira
+álbum sozinho; pedir uma pessoa pelo nome ou pelo id é uma decisão
+consciente, e recusá-la seria proteger você de si mesmo — sem nem
+conseguir: nada impede rebaixar por id e criar o álbum à mão no app.
 """
 
 from __future__ import annotations

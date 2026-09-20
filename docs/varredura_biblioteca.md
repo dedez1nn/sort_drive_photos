@@ -344,6 +344,12 @@ confiar no carimbo do `ranking.json`. Assim um `ranking.json` gerado antes
 do bloqueio também não passa; o carimbo é só o plano B, para quando o acervo
 de embeddings não está em disco.
 
+O alcance do bloqueio termina aí: ele governa o que o ranqueamento lista
+e o que vira álbum sozinho. O `fetch_person.py` não o consulta, de
+propósito — quem passa um id está pedindo aquelas fotos explicitamente, e
+recusar não protegeria nada (dá para rebaixar por id e criar o álbum à mão
+no app). "Bloqueado" aqui quer dizer "não organize isso sozinho".
+
 A blocklist mora em `data/`, que não vai para o git — ela é dado, como o
 acervo de rostos.
 
