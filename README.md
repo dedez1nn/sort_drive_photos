@@ -162,7 +162,11 @@ PROTON_DRIVE_CREDENTIALS_STORE=pass python scripts/scan_library.py
 # 2. ranqueia, offline, sem precisar de nenhuma foto        (~1 min)
 python scripts/rank_people.py --top 20
 
-# 3. cria um álbum por pessoa no Proton Photos (não duplica nenhuma foto)
+# 3. bloqueia quem não deve virar álbum (opcional, ver abaixo)
+python scripts/person_blocklist.py add pessoa_07 --nivel sem-album --nome "Máscaras"
+python scripts/person_blocklist.py add pessoa_03 --nivel ignorar
+
+# 4. cria um álbum por pessoa no Proton Photos (não duplica nenhuma foto)
 python scripts/album_person.py pessoa_01 --dry-run
 python scripts/album_person.py pessoa_01 pessoa_02
 python scripts/album_person.py a1b2c3d4e5f6 --name "Nome da pessoa"
@@ -190,6 +194,35 @@ você reconhecer quem é sem rebaixar nada). O ranking sai em
 Cada pessoa tem um `id` estável (`a1b2c3d4e5f6`) além do `pessoa_NN`. Use o
 id: `pessoa_NN` é só a colocação e **troca de dono** se o ranking for
 recalculado com mais fotos.
+
+### Pessoas que não devem virar álbum
+
+Nem toda identidade do topo merece um álbum. Duas situações, dois níveis:
+
+| nível | aparece no ranking | vira álbum | para quê |
+|---|---|---|---|
+| `sem-album` | sim, carimbado com o motivo | não | grupos que não são uma pessoa só — gente de máscara, por exemplo, que colapsa numa identidade só porque metade do rosto está coberta |
+| `ignorar` | não | não | pessoas de verdade que você não quer organizar; somem do ranking e de qualquer álbum, hoje e nas varreduras futuras |
+
+```bash
+python scripts/person_blocklist.py add pessoa_07 --nivel sem-album \
+    --nome "Máscaras" --motivo "não é uma pessoa"
+python scripts/person_blocklist.py add pessoa_03 pessoa_09 --nivel ignorar
+python scripts/person_blocklist.py list
+python scripts/person_blocklist.py check    # o que cada bloqueio pega, e com que folga
+python scripts/person_blocklist.py remove b2c3d4e5f601
+```
+
+O bloqueio é guardado pelos **rostos** da pessoa, não pelo `pessoa_NN` nem
+pelo `id` — os dois mudam quando a biblioteca cresce, e "nunca mais" só vale
+se continuar valendo depois da próxima varredura. O reconhecimento usa o
+mesmo critério que o nível 2 do ranqueamento ("estes dois conjuntos de
+rostos são a mesma pessoa"), inclusive a regra de que duas pessoas na mesma
+foto são pessoas diferentes — é ela que, na biblioteca de teste, impede que
+bloquear uma identidade leve junto a vizinha mais próxima, a 0.992 dela. Por que
+o teste rosto a rosto do nível 3 **não** serve aqui (pegou 645 rostos da
+pessoa errada), em
+[`docs/varredura_biblioteca.md`](docs/varredura_biblioteca.md).
 
 É seguro interromper e retomar. Detalhes e a validação do método em
 [`docs/varredura_biblioteca.md`](docs/varredura_biblioteca.md).

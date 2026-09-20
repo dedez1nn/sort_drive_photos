@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Manda os agrupamentos de rosto (data/by_person) pro desktop-linux via
+# Manda os agrupamentos de rosto (data/by_person) para outra máquina via
 # SSH/rsync através da rede Tailscale, em ~/imagens/fotos_agrupadas/.
 #
 # Usa uma chave dedicada sem passphrase (~/.ssh/id_ed25519_fotosync),
-# só autorizada no desktop-linux pra esse fim, então roda sem pedir senha:
+# só autorizada na máquina de destino pra esse fim, então roda sem senha:
 #
 #   scripts/send_to_desktop.sh
 #
@@ -12,8 +12,10 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-REMOTE_USER="usuario"
-REMOTE_HOST="desktop-linux"
+# Configuráveis por ambiente: export FOTOSYNC_USER/FOTOSYNC_HOST para
+# apontar para a sua máquina sem editar o script.
+REMOTE_USER="${FOTOSYNC_USER:-$USER}"
+REMOTE_HOST="${FOTOSYNC_HOST:-desktop-linux}"
 REMOTE_DIR="Imagens/fotos_agrupadas"
 IDENTITY="$HOME/.ssh/id_ed25519_fotosync"
 SRC="${1:-$REPO_ROOT/data/by_person/}"

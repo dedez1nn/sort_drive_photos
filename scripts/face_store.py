@@ -99,6 +99,23 @@ class FaceStore:
         return self.vec_path.stat().st_size // (self.dim * np.dtype(DTYPE).itemsize)
 
 
+def prancha(meta, membros, thumb_dir: Path, destino: Path, cols: int = 12, cell: int = 110):
+    nomes = [meta[m].get("thumb") for m in membros if meta[m].get("thumb")]
+    if not nomes:
+        return False
+    nomes = nomes[: cols * 4]
+    linhas = (len(nomes) + cols - 1) // cols
+    folha = Image.new("RGB", (cell * cols, cell * linhas), (22, 22, 22))
+    for i, nome in enumerate(nomes):
+        caminho = thumb_dir / nome
+        if not caminho.exists():
+            continue
+        r, c = divmod(i, cols)
+        folha.paste(Image.open(caminho).resize((cell, cell)), (c * cell, r * cell))
+    folha.save(destino)
+    return True
+
+
 def make_thumb(image: np.ndarray, bbox, px: int = THUMB_PX) -> Image.Image:
     """Recorte quadrado do rosto com uma folga de 30%, para dar contexto
     suficiente para reconhecer a pessoa na revisão visual."""

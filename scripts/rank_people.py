@@ -35,10 +35,20 @@ rostos (inclusive os que ficaram sozinhos no nível 1) são atribuídos por
 quórum. É isso que dá a contagem exata: uma aparição isolada de alguém
 frequente volta para a conta dele.
 
+**Nível 4 — blocklist.** Com as identidades prontas, as que são uma
+pessoa marcada como `ignorar` em `scripts/person_blocklist.py` saem do
+ranking, e as marcadas como `sem-album` ficam, carimbadas com `bloqueio`
+no `ranking.json` — é esse carimbo, junto com a checagem que o próprio
+`album_person.py` refaz, que impede um álbum delas. O reconhecimento é
+por rosto e não pelo nome, então continua valendo depois de revarrer a
+biblioteca; o porquê do teste ser sobre a identidade inteira está no
+cabeçalho do person_blocklist.
+
 Uso:
     python scripts/rank_people.py                # top 20
     python scripts/rank_people.py --top 50
     python scripts/rank_people.py --block 6000   # blocos maiores, mais RAM
+    python scripts/rank_people.py --no-blocklist # sem os bloqueios, para comparar
 """
 
 from __future__ import annotations
@@ -48,14 +58,14 @@ import hashlib
 import json
 import shutil
 from datetime import datetime, timezone
-from collections import Counter, defaultdict
+from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
-from face_store import FaceStore
+import person_blocklist
+from face_store import FaceStore, prancha
 from identity_store import cluster_labels
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -170,23 +180,6 @@ def nivel3(vetores, fotos, identidades, limiar, quorum: int) -> dict[int, list[i
     return final
 
 
-def prancha(meta, membros, thumb_dir: Path, destino: Path, cols: int = 12, cell: int = 110):
-    nomes = [meta[m].get("thumb") for m in membros if meta[m].get("thumb")]
-    if not nomes:
-        return False
-    nomes = nomes[: cols * 4]
-    linhas = (len(nomes) + cols - 1) // cols
-    folha = Image.new("RGB", (cell * cols, cell * linhas), (22, 22, 22))
-    for i, nome in enumerate(nomes):
-        caminho = thumb_dir / nome
-        if not caminho.exists():
-            continue
-        r, c = divmod(i, cols)
-        folha.paste(Image.open(caminho).resize((cell, cell)), (c * cell, r * cell))
-    folha.save(destino)
-    return True
-
-
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--store", default=str(REPO_ROOT / "data" / "faces"))
@@ -202,6 +195,12 @@ def main() -> int:
     p.add_argument("--threshold", type=float, default=1.00,
                    help="Limiar de agrupamento, escala do ArcFace (default 1.00)")
     p.add_argument("--quorum", type=int, default=3)
+    p.add_argument("--blocklist", default=str(person_blocklist.DEFAULT_ROOT),
+                   help="Pasta com as pessoas bloqueadas (default data/blocklist). "
+                        "Veja scripts/person_blocklist.py")
+    p.add_argument("--no-blocklist", action="store_true",
+                   help="Ranqueia como se a blocklist estivesse vazia — para conferir "
+                        "o que ela está tirando")
     p.add_argument("--min-det-score", type=float, default=0.70,
                    help="Ignora rostos abaixo desta confiança de detecção (default 0.70). "
                         "A varredura guarda tudo acima de 0.60 justamente para este corte "
@@ -237,6 +236,13 @@ def main() -> int:
         print("Rostos de menos para ranquear.")
         return 1
 
+    bl = (person_blocklist.Blocklist(Path(args.blocklist), [])
+          if args.no_blocklist else person_blocklist.Blocklist.load(Path(args.blocklist)))
+    if bl.perfis:
+        print(f"Blocklist: {len(bl.perfis)} pessoas bloqueadas "
+              f"({len(bl.do_nivel('ignorar'))} ignoradas, "
+              f"{len(bl.do_nivel('sem-album'))} sem álbum).")
+
     fotos = [m["photo_id"] for m in meta]
     ordem = sorted(range(len(meta)), key=lambda i: meta[i].get("capture_time") or "")
 
@@ -250,7 +256,38 @@ def main() -> int:
         return 0
     final = nivel3(vetores, fotos, identidades, args.threshold, args.quorum)
 
-    ranking = sorted(final.items(), key=lambda kv: -len(kv[1]))[: args.top]
+    def chaves(membros):
+        return [f"{meta[m]['photo_id']}:{meta[m]['face_index']}" for m in membros]
+
+    # Nível 4 — blocklist. Depois do agrupamento, e não antes, porque o
+    # reconhecimento de uma pessoa bloqueada precisa da identidade
+    # inteira: é no conjunto que estão a média que o limiar compara e a
+    # co-ocorrência que separa duas pessoas parecidas. Filtrar rosto a
+    # rosto na entrada foi tentado e pegou 645 rostos da pessoa mais
+    # frequente do acervo junto com os da bloqueada (ver
+    # person_blocklist).
+    #
+    # De quebra, os rostos da pessoa ignorada continuam disputando o nível
+    # 3: ela segue "puxando para si" os rostos que são dela, em vez de
+    # deixá-los livres para serem absorvidos por quem ficou.
+    ordenadas = sorted(final.values(), key=len, reverse=True)
+    ranking, bloqueios = [], {}
+    for membros in ordenadas:
+        ks = chaves(membros)
+        perfil, d = bl.classificar(ks, vetores[membros], "ignorar", args.merge_threshold)
+        if perfil:
+            print(f"  blocklist/ignorar: {len(membros)} rostos são {perfil} "
+                  f"(rms {d:.3f}) — fora do ranking"
+                  + (f": {perfil.motivo}" if perfil.motivo else ""))
+            continue
+        perfil, d = bl.classificar(ks, vetores[membros], "sem-album", args.merge_threshold)
+        if perfil:
+            bloqueios[len(ranking)] = {"nivel": "sem-album", "perfil": perfil.chave,
+                                       "nome": perfil.nome, "motivo": perfil.motivo,
+                                       "rms": round(d, 3)}
+        ranking.append(membros)
+        if len(ranking) >= args.top:
+            break
     out = Path(args.out)
     if out.exists():
         shutil.rmtree(out)
@@ -258,13 +295,13 @@ def main() -> int:
 
     resumo = []
     print(f"\nTop {len(ranking)} pessoas mais frequentes:")
-    for pos, (_, membros) in enumerate(ranking, 1):
+    for pos, membros in enumerate(ranking, 1):
         uids = sorted({meta[m]["uid"] for m in membros})
         datas = sorted(d for d in (meta[m].get("capture_time") for m in membros) if d)
         nome = f"pessoa_{pos:02d}"
         # `pessoa_NN` é só a posição no ranking desta execução, e a posição
         # troca de dono quando o acervo cresce ou o corte muda — foi o que
-        # aconteceu na prática, com a pessoa_12 virando outra pessoa entre
+        # aconteceu na prática: uma colocação virou outra pessoa entre
         # duas execuções durante a varredura. O `id` abaixo é derivado das
         # fotos da identidade, então acompanha a PESSOA, não a colocação;
         # é ele que o fetch_person usa para detectar que uma pasta já
@@ -272,14 +309,20 @@ def main() -> int:
         ident_id = hashlib.sha256("|".join(uids).encode()).hexdigest()[:12]
         prancha(meta, membros, store.thumb_dir, out / f"{nome}.jpg")
         periodo = f"{datas[0][:7]} a {datas[-1][:7]}" if datas else "?"
-        print(f"  {nome} [{ident_id}]: {len(membros)} rostos em {len(uids)} fotos   ({periodo})")
+        # "sem-album" continua no ranking de propósito: é informação útil
+        # ("este grupo existe e é gente de máscara"), e a pessoa segue
+        # disponível para o fetch_person. Só o álbum está barrado — e a
+        # marca viaja no ranking.json para o album_person ver.
+        bloqueio = bloqueios.get(pos - 1)
+        print(f"  {nome} [{ident_id}]: {len(membros)} rostos em {len(uids)} fotos   ({periodo})"
+              + (f"   <-- sem álbum: {bloqueio['nome']}" if bloqueio else ""))
         # `uids` diz em QUE FOTOS a pessoa aparece (é o que o fetch_person
         # usa). `faces` diz QUAL ROSTO de cada foto é dela — sem isso,
         # qualquer conferência posterior tem que adivinhar, e numa foto de
         # grupo acaba pegando o rosto de outra pessoa. Custou três análises
         # erradas antes de virar campo do arquivo.
         resumo.append({"pessoa": nome, "id": ident_id, "rostos": len(membros),
-                       "fotos": len(uids),
+                       "fotos": len(uids), "bloqueio": bloqueio,
                        "primeiro": datas[0] if datas else None,
                        "ultimo": datas[-1] if datas else None,
                        "uids": uids,
@@ -290,6 +333,8 @@ def main() -> int:
         {"gerado_em": datetime.now(timezone.utc).isoformat(timespec="seconds"),
          "rostos_no_acervo": len(todos), "rostos_usados": len(meta),
          "min_det_score": args.min_det_score, "threshold": args.threshold,
+         "blocklist": [{"chave": p.chave, "nome": p.nome, "nivel": p.nivel,
+                        "motivo": p.motivo} for p in bl.perfis],
          "pessoas": resumo}, indent=2, ensure_ascii=False))
     print(f"\nPranchas de rosto e ranking.json em {out}")
     print(f"Para rebaixar as fotos de alguém: python scripts/fetch_person.py pessoa_01")

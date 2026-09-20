@@ -244,6 +244,109 @@ disso: se você renomear "Pessoa 05" para outro nome no app, uma execução de
 `album_person.py pessoa_05` cria um álbum novo em vez de reaproveitar o seu.
 Passe `--name` com o nome novo.
 
+## Passo 6 — pessoas que não devem virar álbum
+
+Nem tudo que o ranking encontra merece um álbum, e por dois motivos
+diferentes.
+
+O primeiro é que **nem toda identidade é uma pessoa**. Uma identidade do
+topo pode ser um grupo de gente de máscara: com metade do rosto coberto, o
+que sobra do embedding é parecido demais entre pessoas diferentes e elas
+colapsam num grupo só. Isso não é um limiar mal escolhido — o sinal que separaria essas
+pessoas não está na foto. O grupo é legítimo como informação ("estas 55
+fotos são de gente mascarada") e inútil como álbum.
+
+O segundo é mais simples: **você pode não querer organizar alguém**, sem
+nada de errado com o agrupamento.
+
+```bash
+python scripts/person_blocklist.py add pessoa_07 --nivel sem-album \
+    --nome "Máscaras" --motivo "grupo de gente de máscara, não é uma pessoa"
+python scripts/person_blocklist.py add pessoa_03 pessoa_09 --nivel ignorar
+python scripts/person_blocklist.py list
+python scripts/person_blocklist.py check
+```
+
+| nível | aparece no ranking | vira álbum |
+|---|---|---|
+| `sem-album` | **sim**, carimbado com o motivo | não |
+| `ignorar` | não | não |
+
+### O identificador não pode ser o nome — nem o id
+
+"Toda aparição futura" é a parte difícil. `pessoa_NN` é a colocação e troca
+de dono. O `id` do ranking é o hash dos uids das fotos, então **muda
+justamente quando a pessoa ganha uma foto nova**. Nenhum dos dois sobrevive
+à próxima varredura.
+
+O que acompanha a pessoa é o rosto. O perfil guardado em `data/blocklist/`
+é o banco de embeddings da identidade bloqueada mais a lista de rostos dela
+(`photo_id:face_index`), e o reconhecimento futuro é feito contra isso.
+
+### A primeira tentativa pegou 645 rostos da pessoa errada
+
+O teste natural seria o mesmo do nível 3: para cada rosto, a média das 3
+menores distâncias até o banco, bloqueia se ≤ 1.00. Medido aqui, o perfil
+de uma identidade bloqueada pegou 1149 rostos — **645 deles de outra
+pessoa**, justamente a mais frequente do acervo inteiro.
+
+O erro foi reaproveitar o limiar fora do contexto dele. No nível 3 o teste
+não é absoluto, é uma **disputa**: o rosto vai para a identidade mais
+próxima entre todas, e as outras candidatas fazem o trabalho de segurar o
+que não é delas. Sozinho, sem ninguém para perder a disputa, o mesmo número
+vira uma rede que pega meio mundo.
+
+### O critério que vale
+
+É o do nível 2 — o que o projeto já usa para decidir "estes dois grupos são
+a mesma pessoa" — aplicado à identidade inteira, nunca a rostos avulsos:
+
+1. **Nenhum conflito de foto.** Se a identidade tem um rosto numa foto onde
+   o perfil tem *outro* rosto, são duas pessoas juntas numa foto, e duas
+   pessoas numa foto nunca são a mesma pessoa.
+2. **RMS entre os centroides ≤ 1.10** (`--merge-threshold`).
+
+A regra 1 tem que comparar rostos, não fotos: a própria pessoa bloqueada
+compartilha *todas* as fotos com o perfil, porque são os mesmos rostos.
+
+E é ela que decide o caso difícil. Na biblioteca de teste a distância
+sozinha não separa as duas:
+
+```
+perfil bloqueado   a própria identidade   rms=0.964   BLOQUEIA
+                   vizinha A              rms=0.992   5 fotos em comum -> outra pessoa
+                   vizinha B              rms=1.032   2 fotos em comum -> outra pessoa
+                   vizinha C              rms=1.079   3 fotos em comum -> outra pessoa
+                   vizinha D              rms=1.093   2 fotos em comum -> outra pessoa
+```
+
+O perfil está mais perto de si mesmo do que da vizinha A por 0.028 — margem
+nenhuma, as duas se parecem. O que resolve é a co-ocorrência, e ela continua
+valendo no futuro, porque as fotos antigas continuam no acervo.
+
+Rodado sobre o ranking inteiro, cada um dos 8 perfis bloqueia exatamente a
+própria identidade e nada mais (`person_blocklist.py check` imprime essa
+tabela, que é o jeito de ver se um bloqueio está prestes a levar junto
+alguém que você quer).
+
+### Onde o bloqueio acontece
+
+No `rank_people.py`, **depois** do nível 3 e antes do corte do top N — as
+identidades `ignorar` saem do ranking e outras cinco pessoas sobem no lugar.
+Depois, e não antes, por dois motivos: o reconhecimento precisa da
+identidade formada (é no conjunto que estão a média e a co-ocorrência), e
+deixar os rostos da pessoa ignorada disputarem o nível 3 é o que impede que
+eles sejam absorvidos por quem ficou. Na prática as contagens das cinco
+ignoradas bateram exatamente com as do ranking anterior — nada vazou.
+
+E no `album_person.py`, que refaz a checagem por conta própria em vez de
+confiar no carimbo do `ranking.json`. Assim um `ranking.json` gerado antes
+do bloqueio também não passa; o carimbo é só o plano B, para quando o acervo
+de embeddings não está em disco.
+
+A blocklist mora em `data/`, que não vai para o git — ela é dado, como o
+acervo de rostos.
+
 ## Limitações
 
 - **Quem aparece pouco não entra.** O nível 2 descarta grupos de 1 rosto
@@ -258,6 +361,10 @@ Passe `--name` com o nome novo.
   `--refresh-catalog`.
 - **Renomear um álbum no app desconecta ele do script**, que procura pelo
   nome. Use `--name` com o nome novo.
+- **A blocklist reconhece identidades, não rostos soltos.** Se uma pessoa
+  bloqueada aparecer tão pouco numa varredura futura que não chegue a
+  formar identidade, ela não é reconhecida — mas também não vira álbum,
+  porque não entra no ranking.
 - **Trocar o modelo de embedding invalida o acervo**, e os embeddings não
   podem ser recalculados sem rebaixar as fotos. Como o `uid` está guardado,
   isso é possível — só custa outra varredura.
