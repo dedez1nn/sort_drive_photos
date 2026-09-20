@@ -1,6 +1,10 @@
-face_recognition
-setuptools<81  # face_recognition_models (não mantido) importa pkg_resources, removido do setuptools 81+
+# Detecção (SCRFD) e reconhecimento (ArcFace 512-d). Substituíram o
+# face_recognition/dlib, cujo embedding de 128-d não separava as pessoas
+# da biblioteca de teste — ver docs/agrupamento_facial.md.
+insightface
+onnxruntime
 numpy
+scipy  # clusterização hierárquica (average linkage) em identity_store.py
 pillow
 pillow-heif
 tqdm
