@@ -124,8 +124,24 @@ def nivel2(vetores, fotos, grupos, limiar: float) -> list[list[int]]:
     centroides = np.array([vetores[g].mean(axis=0) for g in candidatos])
     tamanhos = np.array([len(g) for g in candidatos], dtype=float)
     membros = [list(g) for g in candidatos]
-    fotos_de = [{fotos[i] for i in g} for g in candidatos]
     vivo = np.ones(len(candidatos), dtype=bool)
+
+    # Grupos que dividem uma foto são pessoas diferentes. A matriz é
+    # montada uma vez, pela foto e não pelos pares: percorrer todos os
+    # pares de grupos a cada fusão era O(k²) em Python, milhões de
+    # interseções de set ao longo das fusões. Pelo lado da foto, o custo
+    # é a soma dos quadrados de quantos grupos dividem cada foto — que é
+    # sempre um punhado, porque uma foto tem poucos rostos.
+    conflito = np.zeros((len(candidatos),) * 2, dtype=bool)
+    grupos_da_foto: dict[str, set[int]] = defaultdict(set)
+    for gi, g in enumerate(candidatos):
+        for i in g:
+            grupos_da_foto[fotos[i]].add(gi)
+    for juntos in grupos_da_foto.values():
+        if len(juntos) > 1:
+            ids = np.fromiter(juntos, dtype=int)
+            conflito[np.ix_(ids, ids)] = True
+    np.fill_diagonal(conflito, False)
 
     while True:
         idx = np.flatnonzero(vivo)
@@ -134,11 +150,7 @@ def nivel2(vetores, fotos, grupos, limiar: float) -> list[list[int]]:
         c = centroides[idx]
         rms = np.sqrt(np.maximum(2.0 - 2.0 * (c @ c.T), 0.0))
         np.fill_diagonal(rms, np.inf)
-        # Grupos que dividem uma foto são pessoas diferentes.
-        for a in range(len(idx)):
-            for b in range(a + 1, len(idx)):
-                if fotos_de[idx[a]] & fotos_de[idx[b]]:
-                    rms[a, b] = rms[b, a] = np.inf
+        rms[conflito[np.ix_(idx, idx)]] = np.inf
         pos = int(np.argmin(rms))
         a, b = divmod(pos, len(idx))
         if not np.isfinite(rms[a, b]) or rms[a, b] > limiar:
@@ -148,7 +160,11 @@ def nivel2(vetores, fotos, grupos, limiar: float) -> list[list[int]]:
         centroides[i] = (na * centroides[i] + nb * centroides[j]) / (na + nb)
         tamanhos[i] = na + nb
         membros[i].extend(membros[j])
-        fotos_de[i] |= fotos_de[j]
+        # O grupo fundido herda os conflitos dos dois: é o que o
+        # `fotos_de[i] |= fotos_de[j]` fazia, sem refazer interseções.
+        conflito[i] |= conflito[j]
+        conflito[:, i] |= conflito[:, j]
+        conflito[i, i] = False
         vivo[j] = False
 
     return [membros[i] for i in np.flatnonzero(vivo)]
@@ -157,26 +173,56 @@ def nivel2(vetores, fotos, grupos, limiar: float) -> list[list[int]]:
 def nivel3(vetores, fotos, identidades, limiar, quorum: int) -> dict[int, list[int]]:
     """Atribui todos os rostos às identidades formadas, por quórum. Um
     rosto só entra se ainda não houver outro rosto DELE mesmo nessa
-    identidade vindo da mesma foto."""
+    identidade vindo da mesma foto.
+
+    As distâncias são calculadas de uma vez, antes de qualquer
+    atribuição, e isso é correto porque os bancos NÃO crescem durante a
+    passada: um rosto atribuído não vira referência para o próximo. O
+    único estado que muda é o conjunto de fotos já usadas por cada
+    identidade, que só desqualifica candidatos — não altera distância
+    nenhuma. Por isso a matriz pode ser pré-computada sem mudar o
+    resultado.
+
+    A versão anterior fazia um `np.linalg.norm` por (rosto, identidade)
+    dentro de dois laços Python: 2803 × 583 iterações, ~24s dos ~80s da
+    execução, crescendo perto do quadrado conforme o acervo cresce.
+    Aqui o laço externo é só pelas identidades, e cada uma resolve todos
+    os rostos soltos de uma vez."""
     final: dict[int, list[int]] = {i: list(m) for i, m in enumerate(identidades)}
     fotos_por_id = {i: {fotos[m] for m in membros} for i, membros in final.items()}
     ja = {m for membros in final.values() for m in membros}
-
-    bancos = {i: vetores[membros] for i, membros in final.items()}
     soltos = [i for i in range(len(vetores)) if i not in ja]
-    for face in tqdm(soltos, desc="Nível 3 (atribuição)", unit="rosto"):
-        v = vetores[face]
-        melhor, melhor_d = None, None
-        for i, banco in bancos.items():
+    if not soltos:
+        return final
+
+    alvos = vetores[soltos]
+    n_alvos = np.square(alvos).sum(axis=1)
+    scores = np.empty((len(soltos), len(final)))
+    for i, membros in tqdm(final.items(), total=len(final),
+                           desc="Nível 3 (distâncias)", unit="identidade"):
+        banco = vetores[membros]
+        # ||a-b||² = ||a||² + ||b||² - 2ab, para não materializar a
+        # diferença rosto a rosto.
+        d2 = (n_alvos[:, None] + np.square(banco).sum(axis=1)[None, :]
+              - 2.0 * (alvos @ banco.T))
+        d = np.sqrt(np.maximum(d2, 0.0))
+        k = min(quorum, len(membros))
+        idx = np.argpartition(d, k - 1, axis=1)[:, :k]
+        scores[:, i] = np.take_along_axis(d, idx, axis=1).mean(axis=1)
+
+    # A ordem de atribuição é a mesma de antes (os rostos na ordem de
+    # `soltos`), e o desempate também: `argsort` estável devolve a
+    # identidade de menor índice quando duas empatam, que era o efeito
+    # de comparar com `<` percorrendo o dicionário em ordem.
+    for pos, face in enumerate(tqdm(soltos, desc="Nível 3 (atribuição)", unit="rosto")):
+        for i in np.argsort(scores[pos], kind="stable"):
+            i = int(i)
             if fotos[face] in fotos_por_id[i]:
                 continue
-            d = np.sort(np.linalg.norm(banco - v, axis=1))
-            score = float(d[: min(quorum, len(d))].mean())
-            if melhor_d is None or score < melhor_d:
-                melhor, melhor_d = i, score
-        if melhor is not None and melhor_d <= limiar:
-            final[melhor].append(face)
-            fotos_por_id[melhor].add(fotos[face])
+            if scores[pos, i] <= limiar:
+                final[i].append(face)
+                fotos_por_id[i].add(fotos[face])
+            break
     return final
 
 
@@ -272,7 +318,12 @@ def main() -> int:
     # 3: ela segue "puxando para si" os rostos que são dela, em vez de
     # deixá-los livres para serem absorvidos por quem ficou.
     ordenadas = sorted(final.values(), key=len, reverse=True)
-    ranking, bloqueios = [], {}
+    # (membros, bloqueio) na mesma tupla: uma versão anterior guardava o
+    # carimbo num dicionário à parte, indexado pela posição, e os dois
+    # laços tinham que concordar sobre um índice implícito. Um `continue`
+    # a mais em qualquer um deles carimbaria a pessoa errada, e o sintoma
+    # ("o álbum da pessoa errada foi barrado") não aponta para a causa.
+    ranking: list[tuple[list[int], dict | None]] = []
     for membros in ordenadas:
         ks = chaves(membros)
         perfil, d = bl.classificar(ks, vetores[membros], "ignorar", args.merge_threshold)
@@ -282,11 +333,12 @@ def main() -> int:
                   + (f": {perfil.motivo}" if perfil.motivo else ""))
             continue
         perfil, d = bl.classificar(ks, vetores[membros], "sem-album", args.merge_threshold)
+        bloqueio = None
         if perfil:
-            bloqueios[len(ranking)] = {"nivel": "sem-album", "perfil": perfil.chave,
-                                       "nome": perfil.nome, "motivo": perfil.motivo,
-                                       "rms": round(d, 3)}
-        ranking.append(membros)
+            bloqueio = {"nivel": "sem-album", "perfil": perfil.chave,
+                        "nome": perfil.nome, "motivo": perfil.motivo,
+                        "rms": round(d, 3)}
+        ranking.append((membros, bloqueio))
         if len(ranking) >= args.top:
             break
     out = Path(args.out)
@@ -296,7 +348,7 @@ def main() -> int:
 
     resumo = []
     print(f"\nTop {len(ranking)} pessoas mais frequentes:")
-    for pos, membros in enumerate(ranking, 1):
+    for pos, (membros, bloqueio) in enumerate(ranking, 1):
         uids = sorted({meta[m]["uid"] for m in membros})
         datas = sorted(d for d in (meta[m].get("capture_time") for m in membros) if d)
         nome = f"pessoa_{pos:02d}"
@@ -314,7 +366,6 @@ def main() -> int:
         # ("este grupo existe e é gente de máscara"), e a pessoa segue
         # disponível para o fetch_person. Só o álbum está barrado — e a
         # marca viaja no ranking.json para o album_person ver.
-        bloqueio = bloqueios.get(pos - 1)
         print(f"  {nome} [{ident_id}]: {len(membros)} rostos em {len(uids)} fotos   ({periodo})"
               + (f"   <-- sem álbum: {bloqueio['nome']}" if bloqueio else ""))
         # `uids` diz em QUE FOTOS a pessoa aparece (é o que o fetch_person
@@ -338,7 +389,7 @@ def main() -> int:
                         "motivo": p.motivo} for p in bl.perfis],
          "pessoas": resumo}, indent=2, ensure_ascii=False))
     print(f"\nPranchas de rosto e ranking.json em {out}")
-    print(f"Para rebaixar as fotos de alguém: python scripts/fetch_person.py pessoa_01")
+    print("Para rebaixar as fotos de alguém: python scripts/fetch_person.py pessoa_01")
     return 0
 
 

@@ -39,7 +39,6 @@ import argparse
 import json
 from pathlib import Path
 
-import numpy as np
 from tqdm import tqdm
 
 import person_blocklist
@@ -149,7 +148,11 @@ def main() -> int:
         meta = store.load_meta()
         if meta:
             indice = person_blocklist.posicoes_no_acervo(meta)
-            vetores = np.asarray(store.load_embeddings(), dtype=np.float64)
+            # Memmap: `vetores_da_pessoa` converte depois de indexar as
+            # poucas posições da pessoa. Converter o acervo inteiro aqui
+            # materializaria ~39 MB em float64 para conferir meia dúzia
+            # de identidades, desfazendo o motivo de o memmap existir.
+            vetores = store.load_embeddings()
         print(f"Blocklist: {len(bl.perfis)} pessoas bloqueadas"
               + ("" if indice else " (acervo indisponível; valendo só o carimbo do ranking)"))
 
@@ -182,7 +185,7 @@ def main() -> int:
             albuns = listar_albuns(args.proton_bin)
             album_uid = albuns.get(nome)
             if not album_uid:
-                print(f"  ERRO: criei o álbum mas não o encontrei na listagem; pulando")
+                print("  ERRO: criei o álbum mas não o encontrei na listagem; pulando")
                 continue
             print(f"  álbum criado ({album_uid[-12:]})")
 

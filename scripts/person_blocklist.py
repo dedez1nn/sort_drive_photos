@@ -134,16 +134,20 @@ class Perfil:
     def __str__(self) -> str:
         return f"{self.nome} [{self.chave}]"
 
-    def conflitos(self, faces) -> int:
+    def conflitos(self, fotos: dict[str, set[str]]) -> int:
         """Em quantas fotos esta identidade e o perfil têm rostos
         DIFERENTES. Qualquer número acima de zero já diz que são duas
         pessoas — ninguém aparece duas vezes na mesma foto.
 
         Tem que ser por rosto, não por foto: a própria pessoa bloqueada
         compartilha todas as fotos com o perfil (são os mesmos rostos), e
-        uma regra por foto a deixaria passar."""
+        uma regra por foto a deixaria passar.
+
+        Recebe a identidade JÁ agrupada por foto (`por_foto`), porque
+        quem chama confere a mesma identidade contra vários perfis e
+        reagrupar a cada um é repetir trabalho."""
         outros = 0
-        for pid, indices in por_foto(faces).items():
+        for pid, indices in fotos.items():
             meus = self._por_foto.get(pid)
             if meus and (indices - meus):
                 outros += 1
@@ -185,11 +189,20 @@ class Blocklist:
         return cls(root, perfis)
 
     def save(self) -> None:
+        """Escreve a lista inteira. É o ÚNICO ponto que toca o disco:
+        `upsert` e `remove` só mexem na memória, e um banco `.f32` que
+        não pertence mais a nenhum perfil é apagado aqui. Antes o
+        `remove` salvava sozinho e o `upsert` não, e quem chamava tinha
+        que lembrar da diferença."""
         self.root.mkdir(parents=True, exist_ok=True)
+        vivos = {p.chave for p in self.perfis}
         for p in self.perfis:
             (self.root / f"{p.chave}.f32").write_bytes(
                 np.asarray(p.vetores, dtype=np.float32).tobytes()
             )
+        for orfao in self.root.glob("*.f32"):
+            if orfao.stem not in vivos:
+                orfao.unlink()
         self.index_path.write_text(json.dumps(
             {"atualizado_em": datetime.now(timezone.utc).isoformat(timespec="seconds"),
              "perfis": [p.to_json() for p in self.perfis]}, indent=2, ensure_ascii=False))
@@ -204,12 +217,10 @@ class Blocklist:
         return False
 
     def remove(self, chave: str) -> Perfil | None:
+        """Tira o perfil da lista em memória; quem chama salva."""
         for i, p in enumerate(self.perfis):
             if p.chave == chave or p.nome == chave:
-                self.perfis.pop(i)
-                (self.root / f"{p.chave}.f32").unlink(missing_ok=True)
-                self.save()
-                return p
+                return self.perfis.pop(i)
         return None
 
     # ---------- a decisão ----------
@@ -233,12 +244,12 @@ class Blocklist:
         if not perfis or not len(vetores):
             return None, float("inf")
         centro = vetores.mean(axis=0)
-        faces = list(faces)
+        fotos = por_foto(faces)
         melhor, melhor_d, menor = None, float("inf"), float("inf")
         for p in perfis:
             d = rms(centro, p.centroide)
             menor = min(menor, d)
-            if d > limiar or p.conflitos(faces):
+            if d > limiar or p.conflitos(fotos):
                 continue
             if d < melhor_d:
                 melhor, melhor_d = p, d
@@ -346,6 +357,7 @@ def cmd_remove(args) -> int:
     if not p:
         print(f"Não achei '{args.chave}' na blocklist.")
         return 1
+    bl.save()
     print(f"removido: {p} (nível {p.nivel})")
     return 0
 
@@ -380,7 +392,7 @@ def cmd_check(args) -> int:
             d = rms(v.mean(axis=0), perfil.centroide)
             if d > args.threshold + 0.15:
                 continue
-            conf = perfil.conflitos(pessoa["faces"])
+            conf = perfil.conflitos(por_foto(pessoa["faces"]))
             linhas.append((d, pessoa["pessoa"], conf, d <= args.threshold and not conf))
         for d, nome, conf, bloqueia in sorted(linhas):
             marca = "BLOQUEIA" if bloqueia else (

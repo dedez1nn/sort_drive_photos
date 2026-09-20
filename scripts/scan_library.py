@@ -35,7 +35,6 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
 from tqdm import tqdm
 
 import face_embedder
