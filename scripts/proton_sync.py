@@ -102,6 +102,17 @@ def prune_unwanted_extensions(local_dir: Path, keep_ext: set[str], before: set[s
     return kept
 
 
+def new_files_size(local_dir: Path, before: set[Path]) -> int:
+    """Soma em bytes dos arquivos que existem agora em `local_dir` e não
+    estavam em `before` — chamado depois de qualquer poda por extensão,
+    então reflete só o que ficou de fato em disco."""
+    total = 0
+    for path in local_dir.iterdir():
+        if path.is_file() and path not in before:
+            total += path.stat().st_size
+    return total
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -146,6 +157,14 @@ def main() -> int:
              "for baixada, mesmo sem esgotar --limit",
     )
     parser.add_argument(
+        "--max-size-mb",
+        type=float,
+        default=None,
+        help="Para de baixar assim que os arquivos mantidos nesta execução somarem esse "
+             "tanto de MB, mesmo sem esgotar --limit/--target-count. Pensado pra baixar a "
+             "biblioteca inteira em lotes de tamanho fixo (ex.: 3000 = ~3GB por lote).",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="Só lista o que faria, sem baixar nada"
     )
     args = parser.parse_args()
@@ -179,6 +198,8 @@ def main() -> int:
     kept = 0
     failed = 0
     scanned = 0
+    kept_bytes = 0
+    max_bytes = int(args.max_size_mb * 1024 * 1024) if args.max_size_mb else None
     batches = [
         pending[i : i + args.batch_size] for i in range(0, len(pending), args.batch_size)
     ]
@@ -187,6 +208,9 @@ def main() -> int:
     with tqdm(total=bar_total, desc="Baixando", unit=unit) as bar:
         for batch in batches:
             if keep_ext and args.target_count and kept >= args.target_count:
+                break
+            if max_bytes and kept_bytes >= max_bytes:
+                tqdm.write(f"Atingiu --max-size-mb ({args.max_size_mb} MB), parando.")
                 break
             uids = [item["nodeUid"] for item in batch]
             before = set(local_dir.iterdir()) if local_dir.exists() else set()
@@ -215,6 +239,7 @@ def main() -> int:
                                 bar.update(item_kept)
                         else:
                             bar.update(1)
+                        kept_bytes += new_files_size(local_dir, item_before)
                     downloaded += 1
                     scanned += 1
                 continue
@@ -231,13 +256,16 @@ def main() -> int:
                         bar.update(batch_kept)
                 else:
                     bar.update(len(batch))
+                kept_bytes += new_files_size(local_dir, before)
             downloaded += len(batch)
 
+    kept_mb = kept_bytes / (1024 * 1024)
     if keep_ext:
-        print(f"Concluído: {scanned} fotos escaneadas, {kept} mantidas (extensão em {sorted(keep_ext)}), "
-              f"{failed} falharam, {already_synced} já estavam sincronizadas antes desta execução.")
+        print(f"Concluído: {scanned} fotos escaneadas, {kept} mantidas ({kept_mb:.0f} MB, "
+              f"extensão em {sorted(keep_ext)}), {failed} falharam, "
+              f"{already_synced} já estavam sincronizadas antes desta execução.")
     else:
-        print(f"Concluído: {downloaded} baixadas, {failed} falharam, "
+        print(f"Concluído: {downloaded} baixadas ({kept_mb:.0f} MB), {failed} falharam, "
               f"{already_synced} já estavam sincronizadas antes desta execução.")
     return 1 if failed else 0
 
