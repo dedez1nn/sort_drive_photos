@@ -59,9 +59,12 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-`face_recognition` depende do `dlib`, que compila C++ na instalação — pode
-demorar alguns minutos. Se faltar `cmake` ou compilador, instale via pacote
-do sistema antes (`sudo pacman -S cmake` no CachyOS/Arch).
+O reconhecimento facial usa `insightface` (detector SCRFD + embedding
+ArcFace) sobre `onnxruntime` em CPU. Os modelos (~300MB) são baixados
+sozinhos na primeira execução, para `~/.insightface/`. Não compila nada —
+o `face_recognition`/`dlib`, que exigia compilar C++ e `cmake`, foi
+substituído porque o embedding de 128-d dele não separava as pessoas desta
+biblioteca (detalhes em [`docs/agrupamento_facial.md`](docs/agrupamento_facial.md)).
 
 ## 3. Baixar as fotos do Proton Drive
 
@@ -90,32 +93,108 @@ python scripts/face_cluster.py             # fase 1: fotos com 1-2 rostos
 python scripts/face_cluster.py --phase2    # fase 2: fotos com 3+ rostos adiadas
 ```
 
-Roda em lote, em CPU (sem GPU dedicada nesta máquina — pode demorar para uma
-biblioteca grande, mas é retomável). Detecção fica cacheada em
+Roda em lote, em CPU (sem GPU dedicada nesta máquina). Leva ~0,32s por
+imagem — cerca de 2h para uma biblioteca de 21 mil fotos — e é retomável. Detecção fica cacheada em
 `data/faces_index.json`; identidade (pessoa/foto/relação) persiste em
 `data/faces.db` (SQLite) — cada pessoa tem um `person_id` estável entre
 execuções, não um cluster recalculado do zero toda vez.
 
 O resultado fica em `data/by_person/` (symlinks, não copia os arquivos):
-`person_XXX/` para fotos onde a pessoa aparece sozinha, e
-`person_AAA_e_person_BBB/` para fotos com 2+ pessoas identificadas juntas.
-Fotos com rosto detectado mas não identificado caem em `aguardando_fase2/`
-(3+ rostos, ainda não processado) ou `revisao_manual/` (ambíguo demais para
-decidir sozinho).
+`person_XXX/` para fotos onde a pessoa aparece sozinha,
+`person_AAA_e_person_BBB/` para fotos com 2+ pessoas identificadas juntas, e
+`pessoas_raras/` para quem aparece em menos de 3 fotos (a maioria dos rostos
+de uma biblioteca real é gente que aparece uma vez só — desconhecido ao
+fundo, rosto num cartaz — e sem isso as dezenas de pastas de uma foto afogam
+as poucas pessoas que importam). Fotos com rosto detectado mas não
+identificado caem em `aguardando_fase2/` (3+ rostos, ainda não processado) ou
+`revisao_manual/` (ambíguo demais para decidir sozinho).
 
-Se o detector confundir alguma coisa sem rosto (ex.: foto de uma tela, ou de
-um objeto) com uma pessoa, marque como falso positivo permanentemente:
+Rostos pequenos demais ou com baixa confiança de detecção são descartados
+antes de virar identidade (`--min-face-px`, default 50; `--min-det-score`,
+default 0.6). O embedding de um rosto minúsculo é praticamente ruído: fica
+"meio perto" de todo mundo e serve de ponte entre pessoas que não se
+parecem.
+
+Duas pessoas na mesma foto nunca são agrupadas como a mesma identidade —
+ninguém aparece duas vezes numa foto. Parece óbvio, mas é o que permite
+usar um limiar generoso o bastante para reunir a mesma pessoa em condições
+bem diferentes (retrato de estúdio e selfie de praia, por exemplo) sem
+fundir quem aparece ao lado dela.
+
+O que o filtro **não** pega é conteúdo grande e nítido que não é uma pessoa
+da sua vida: rosto em cartaz de filme, foto de jornal numa tela de TV,
+ilustração. Para esses, marque como falso positivo permanentemente:
 
 ```bash
 python scripts/face_cluster.py --exclude IMG_XXXX.HEIC "motivo aqui"
 ```
 
-Ajuste `--match-threshold`/`--uncertain-threshold` se pessoas diferentes
-estiverem sendo confundidas, ou se a mesma pessoa não estiver sendo
-reconhecida entre fotos. Detalhes da arquitetura e das duas fases em
+De tempos em tempos (ou depois de mudar qualquer threshold), vale refazer as
+identidades do zero a partir do índice inteiro, com clusterização global —
+não depende da ordem em que as fotos foram processadas, ao contrário das
+fases incrementais, e preserva as exclusões manuais:
+
+```bash
+python scripts/face_cluster.py --recluster
+```
+
+Toda execução termina imprimindo as 10 maiores identidades com a coerência
+interna de cada uma. Se a maior identidade concentrar uma fatia grande da
+biblioteca, ou aparecer marcada como incoerente, é sinal de que os limiares
+precisam de ajuste (`--match-threshold`, default 1.00 — na escala do
+ArcFace, não comparável com a de versões anteriores). Detalhes da
+arquitetura, das duas fases e das medições em
 [`docs/agrupamento_facial.md`](docs/agrupamento_facial.md).
 
-## 5. Levantar duplicatas
+## 5. Varrer a biblioteca inteira e achar as pessoas mais frequentes
+
+O passo 4 organiza o que está em disco. Para responder "quem são as 20
+pessoas que mais aparecem em anos de fotos" o caminho é outro,
+porque a biblioteca tem 46 GB e esta máquina tem menos de 2 GB livres.
+
+A ideia é separar colher de decidir: os embeddings da biblioteca inteira
+cabem em dezenas de MB, e depois de extraídos as fotos são descartáveis.
+
+```bash
+# 1. varre tudo: baixa lote -> extrai rostos -> apaga lote  (~2h, uma vez)
+PROTON_DRIVE_CREDENTIALS_STORE=pass python scripts/scan_library.py
+
+# 2. ranqueia, offline, sem precisar de nenhuma foto        (~1 min)
+python scripts/rank_people.py --top 20
+
+# 3. cria um álbum por pessoa no Proton Photos (não duplica nenhuma foto)
+python scripts/album_person.py pessoa_01 --dry-run
+python scripts/album_person.py pessoa_01 pessoa_02
+python scripts/album_person.py a1b2c3d4e5f6 --name "Nome da pessoa"
+
+# ou, se preferir as fotos em disco:
+python scripts/fetch_person.py pessoa_01 --dry-run
+python scripts/fetch_person.py pessoa_01 --limit 10
+```
+
+O `album_person.py` usa **álbuns**, não pastas: o Proton Photos é uma seção
+separada de `/my-files` e não aceita pastas. O álbum referencia as fotos que
+já estão lá — não duplica byte nenhum, aparece no app do celular, e apagá-lo
+não toca nas fotos.
+
+A varredura monta antes um catálogo da timeline (`data/catalog.jsonl`) com
+nome, tipo e tamanho de cada foto, o que permite **descartar vídeo,
+screenshot e sticker antes de baixar** — na biblioteca de teste, 36 dos 46 GB.
+O pico de disco é o tamanho de um lote (`--batch-mb`, default 1 GB).
+
+De cada rosto ficam guardados três artefatos: o embedding (para agrupar), o
+`uid` no Proton (para rebaixar a foto depois) e um recorte de ~200px (para
+você reconhecer quem é sem rebaixar nada). O ranking sai em
+`data/top_pessoas/`, com uma prancha de rostos por pessoa.
+
+Cada pessoa tem um `id` estável (`a1b2c3d4e5f6`) além do `pessoa_NN`. Use o
+id: `pessoa_NN` é só a colocação e **troca de dono** se o ranking for
+recalculado com mais fotos.
+
+É seguro interromper e retomar. Detalhes e a validação do método em
+[`docs/varredura_biblioteca.md`](docs/varredura_biblioteca.md).
+
+## 6. Levantar duplicatas
 
 ```bash
 python scripts/dedupe_report.py
@@ -133,7 +212,7 @@ PROTON_DRIVE_CREDENTIALS_STORE=pass dbus-run-session -- \
   proton-drive filesystem delete /Fotos/caminho/do/arquivo/duplicado.jpg
 ```
 
-## 6. Avaliação
+## 7. Avaliação
 
 Depois de rodar tudo, navegue em `data/by_person/` e confira se a
 organização por pessoa está boa o suficiente para substituir o álbum
